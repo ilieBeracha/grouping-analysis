@@ -9,6 +9,14 @@ import json
 
 app = FastAPI()
 
+def contrast_pct(center_val: float, ring_val: float) -> float:
+    """
+    Percentage darkness drop from ring to centre, 0‑100.
+    Higher == darker hole relative to background.
+    """
+    return max(0.0, min(100.0, (ring_val - center_val) / ring_val * 100.0))
+
+
 def find_grid_lines(gray_img: np.ndarray) -> np.ndarray:
     """Return x‑positions of the vertical grid lines (one per square)."""
     sobelx = cv2.Sobel(gray_img, cv2.CV_16S, 1, 0, ksize=3)
@@ -148,6 +156,7 @@ def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: flo
     validated_circles = []
     if circles is not None:
         for (x_c, y_c, r) in circles[0]:
+            
             x_c, y_c, r = int(x_c), int(y_c), int(r)
             # Create a mask for the circle area
             mask = np.zeros(enhanced.shape, dtype=np.uint8)
@@ -156,6 +165,7 @@ def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: flo
             # Check if the center is darker than the surroundings
             mean_center = cv2.mean(enhanced, mask=mask)[0]
             
+            
             # Create ring mask for outer area
             ring_mask = np.zeros(enhanced.shape, dtype=np.uint8)
             cv2.circle(ring_mask, (x_c, y_c), int(r * 1.5), 255, -1)
@@ -163,24 +173,32 @@ def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: flo
             mean_ring = cv2.mean(enhanced, mask=ring_mask)[0]
             
             # Bullet holes should have darker centers
-            if mean_center < mean_ring * 0.85:  # Center is at least 15% darker
-                validated_circles.append([x_c, y_c, r])
+            if mean_center < mean_ring * 0.85:      # <-- keep your test
+                pct = contrast_pct(mean_center, mean_ring)
+                validated_circles.append([x_c, y_c, r, pct])
     
     print(f'Total circles detected: {len(circles[0]) if circles is not None else 0}')
     print(f'Validated circles: {len(validated_circles)}')
     
     results = []
     if validated_circles:
-        for (x_c, y_c, r) in validated_circles:
-            results.append((int(x_c), int(y_c)))
-            # Draw validated hits with thicker circles
+        for (x_c, y_c, r, pct) in validated_circles:
+            results.append((int(x_c), int(y_c), round(pct, 1)))
             cv2.circle(warped, (x_c, y_c), int(r), (0, 255, 0), 3)
-            # Add center dot
             cv2.circle(warped, (x_c, y_c), 2, (0, 0, 255), -1)
+            # draw percentage label
+            cv2.putText(
+                warped,
+                f"{pct:.0f}%",                # e.g. “32%”
+                (x_c + int(r*0.2), y_c - int(r*0.2)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,                          # font scale
+                (0, 255, 0), 1, cv2.LINE_AA
+            )
 
     # 5. Distance in cm
     if len(results) >= 1:
-        dists = pdist(np.array(results))
+        dists = pdist(np.array([pt[:2] for pt in results]))   # use x,y only
         max_px = max(dists)
     else:
         max_px = 0
