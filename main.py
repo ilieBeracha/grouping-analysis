@@ -9,6 +9,18 @@ import json
 
 app = FastAPI()
 
+def find_grid_lines(gray_img: np.ndarray) -> np.ndarray:
+    """Return x‑positions of the vertical grid lines (one per square)."""
+    sobelx = cv2.Sobel(gray_img, cv2.CV_16S, 1, 0, ksize=3)
+    absx   = cv2.convertScaleAbs(sobelx)
+    _, bw  = cv2.threshold(absx, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # sum each column; peaks correspond to vertical lines
+    col_sum = bw.sum(axis=0)
+    peaks   = np.where(col_sum > 0.6 * col_sum.max())[0]   # adjust 0.6 if needed
+    return peaks
+
+
+
 def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: float = 2.0):
     file_bytes = np.asarray(bytearray(image_bytes), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -17,7 +29,7 @@ def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: flo
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                               cv2.THRESH_BINARY_INV, 11, 2)
+                               cv2.THRESH_BINARY_INV, 11,   1)
     print('thresh', thresh)
 
     # 2. Find contours
@@ -75,28 +87,42 @@ def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: flo
     # Apply CLAHE for better contrast
     clahe = cv2.createCLAHE(clipLimit=contrast_factor, tileGridSize=(8,8))
     enhanced = clahe.apply(warped_gray)
-    
+
+    # ------------------------------------------------------------------
+    # ⇣ INSERT GRID‑BASED CALIBRATION HERE ⇣
+    # ------------------------------------------------------------------
+    grid_cols    = np.sort(np.unique(find_grid_lines(enhanced)))
+    print('grid_cols', grid_cols)
+    if len(grid_cols) > 1:                                     # we found the grid
+        grid_size_px = int(np.median(np.diff(grid_cols)))      # pixels per square (≈10 mm)
+        px_per_mm    = grid_size_px / 10.0
+        diameter_mm  = 7.62 if bullet_type == "7.62mm" else 8.6
+        min_radius   = int(px_per_mm * diameter_mm * 0.35)     # 0.7 × r
+        max_radius   = int(px_per_mm * diameter_mm * 0.75)     # 1.5 × r
+    else:
+        # fallback to your previous fixed values
+        min_radius, max_radius = (12, 18) if bullet_type == "7.62mm" else (14, 20)
+
     # Different blur for edge detection vs circle detection
     edge_blur = cv2.GaussianBlur(enhanced, (3, 3), 0)
     circle_blur = cv2.GaussianBlur(enhanced, (5, 5), 0)
     
     # Adaptive parameters based on bullet type
     if bullet_type == "7.62mm":
-        min_radius = 12  # ~30.5 pixels / 2.5
-        max_radius = 18  # ~30.5 pixels / 1.7
+        min_radius = 11  # ~30.5 pixels / 2.5
+        max_radius = 17  # ~30.5 pixels / 1.7
         min_dist = 25
-        param2 = 18  # Lower for better detection of faint holes
+        param2 = 16  #6Lower for better detection of faint holes
     else:  # .338 inch (8.6mm)
         min_radius = 14  # ~34.4 pixels / 2.5
         max_radius = 20  # ~34.4 pixels / 1.7
         min_dist = 28
-        param2 = 18
     
     # Try multiple param1 values for better detection
     all_circles = []
     for param1 in [50, 70, 90]:
         circles = cv2.HoughCircles(
-            circle_blur, cv2.HOUGH_GRADIENT, dp=1.2, minDist=min_dist,
+            edge_blur, cv2.HOUGH_GRADIENT, dp=1.2, minDist=min_dist,
             param1=param1, param2=param2, minRadius=min_radius, maxRadius=max_radius
         )
         if circles is not None:
@@ -153,7 +179,7 @@ def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: flo
             cv2.circle(warped, (x_c, y_c), 2, (0, 0, 255), -1)
 
     # 5. Distance in cm
-    if len(results) >= 2:
+    if len(results) >= 1:
         dists = pdist(np.array(results))
         max_px = max(dists)
     else:
@@ -195,3 +221,4 @@ async def upload_image(bullet_type: str = "7.62mm", contrast: float = 2.0):
 #     contents = await file.read()
 #     result = process_image(contents)
 #     return JSONResponse(content=result)
+
