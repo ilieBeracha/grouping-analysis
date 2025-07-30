@@ -4,10 +4,12 @@ import numpy as np
 import cv2
 from scipy.spatial.distance import pdist
 import io
+from typing import Optional, Tuple, List
+import json
 
 app = FastAPI()
 
-def process_image(image_bytes):
+def process_image(image_bytes, bullet_type: str = "7.62mm", contrast_factor: float = 2.0):
     file_bytes = np.asarray(bytearray(image_bytes), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
@@ -69,22 +71,86 @@ def process_image(image_bytes):
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(img, M, (maxWidth, maxHeight))
     warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-    warped_blur = cv2.GaussianBlur(warped_gray, (5, 5), 0)
     
-
-    circles = cv2.HoughCircles(
-        warped_blur, cv2.HOUGH_GRADIENT, dp=1.1, minDist=30,
-        param1=45, param2=25, minRadius=10, maxRadius=22
-    )
-    print('circles', circles)
-
-
-    results = []
+    # Apply CLAHE for better contrast
+    clahe = cv2.createCLAHE(clipLimit=contrast_factor, tileGridSize=(8,8))
+    enhanced = clahe.apply(warped_gray)
+    
+    # Different blur for edge detection vs circle detection
+    edge_blur = cv2.GaussianBlur(enhanced, (3, 3), 0)
+    circle_blur = cv2.GaussianBlur(enhanced, (5, 5), 0)
+    
+    # Adaptive parameters based on bullet type
+    if bullet_type == "7.62mm":
+        min_radius = 12  # ~30.5 pixels / 2.5
+        max_radius = 18  # ~30.5 pixels / 1.7
+        min_dist = 25
+        param2 = 18  # Lower for better detection of faint holes
+    else:  # .338 inch (8.6mm)
+        min_radius = 14  # ~34.4 pixels / 2.5
+        max_radius = 20  # ~34.4 pixels / 1.7
+        min_dist = 28
+        param2 = 18
+    
+    # Try multiple param1 values for better detection
+    all_circles = []
+    for param1 in [50, 70, 90]:
+        circles = cv2.HoughCircles(
+            circle_blur, cv2.HOUGH_GRADIENT, dp=1.2, minDist=min_dist,
+            param1=param1, param2=param2, minRadius=min_radius, maxRadius=max_radius
+        )
+        if circles is not None:
+            all_circles.extend(circles[0])
+    
+    # Remove duplicates by checking proximity
+    if all_circles:
+        all_circles = np.array(all_circles)
+        unique_circles = []
+        for circle in all_circles:
+            is_duplicate = False
+            for unique in unique_circles:
+                dist = np.linalg.norm(circle[:2] - unique[:2])
+                if dist < min_dist * 0.8:  # 80% of min distance
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_circles.append(circle)
+        circles = np.array(unique_circles).reshape(1, -1, 3) if unique_circles else None
+    else:
+        circles = None
+    # Additional validation - check for dark centers (actual holes)
+    validated_circles = []
     if circles is not None:
-        circles = np.uint16(np.around(circles[0]))
-        for (x_c, y_c, r) in circles:
+        for (x_c, y_c, r) in circles[0]:
+            x_c, y_c, r = int(x_c), int(y_c), int(r)
+            # Create a mask for the circle area
+            mask = np.zeros(enhanced.shape, dtype=np.uint8)
+            cv2.circle(mask, (x_c, y_c), int(r * 0.7), 255, -1)
+            
+            # Check if the center is darker than the surroundings
+            mean_center = cv2.mean(enhanced, mask=mask)[0]
+            
+            # Create ring mask for outer area
+            ring_mask = np.zeros(enhanced.shape, dtype=np.uint8)
+            cv2.circle(ring_mask, (x_c, y_c), int(r * 1.5), 255, -1)
+            cv2.circle(ring_mask, (x_c, y_c), r, 0, -1)
+            mean_ring = cv2.mean(enhanced, mask=ring_mask)[0]
+            
+            # Bullet holes should have darker centers
+            if mean_center < mean_ring * 0.85:  # Center is at least 15% darker
+                validated_circles.append([x_c, y_c, r])
+    
+    print(f'Total circles detected: {len(circles[0]) if circles is not None else 0}')
+    print(f'Validated circles: {len(validated_circles)}')
+    
+    results = []
+    if validated_circles:
+        for (x_c, y_c, r) in validated_circles:
             results.append((int(x_c), int(y_c)))
-            cv2.circle(warped, (x_c, y_c), r, (0, 255, 0), 2)
+            # Draw validated hits with thicker circles
+            cv2.circle(warped, (x_c, y_c), int(r), (0, 255, 0), 3)
+            # Add center dot
+            cv2.circle(warped, (x_c, y_c), 2, (0, 0, 255), -1)
 
     # 5. Distance in cm
     if len(results) >= 2:
@@ -96,8 +162,13 @@ def process_image(image_bytes):
     pixels_per_cm = 40  # Adjust this based on resolution
     max_cm = round(max_px / pixels_per_cm, 2)
 
-    # 6. Save result
+    # Save result and debug images
     cv2.imwrite("annotated_output.jpg", warped)
+    cv2.imwrite("enhanced_debug.jpg", enhanced)
+    
+    # Save threshold debug for analysis
+    _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    cv2.imwrite("thresh_debug.jpg", binary)
 
     return {
         "num_hits": len(results),
@@ -111,11 +182,11 @@ async def root():
     return {"message": "Grouping Analysis API - ScopeStats"}
 
 @app.post("/upload/")
-async def upload_image():
+async def upload_image(bullet_type: str = "7.62mm", contrast: float = 2.0):
     test_image = "test.jpeg"
     with open(test_image, "rb") as f:
         contents = f.read()
-        result = process_image(contents)
+        result = process_image(contents, bullet_type=bullet_type, contrast_factor=contrast)
         print('result', result)
         return JSONResponse(content=result, status_code=200)
 
