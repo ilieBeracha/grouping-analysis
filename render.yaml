@@ -3,10 +3,8 @@ services:
     name: grouping-analysis
     runtime: python
     region: oregon
-    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    buildCommand: "pip install --upgrade pip setuptools wheel && pip install -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11.0"
-      - key: LD_PRELOAD
-        value: "/usr/lib/x86_64-linux-gnu/libgthread-2.0.so.0"
+        value: "3.12"
