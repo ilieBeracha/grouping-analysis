@@ -207,10 +207,9 @@ def detect_bullets(
             if x < 20 or y < 20 or x > w - 20 or y > h - 20:
                 continue
             
-                            # CRITICAL: Skip if in exclusion zone (printed targets, text, etc.)
-                # TEMPORARILY DISABLED FOR DEBUGGING
-                # if exclusion_zone[y, x] > 0:
-                #     continue
+            # CRITICAL: Skip if in exclusion zone (printed targets, text, etc.)
+            if exclusion_zone[y, x] > 0:
+                continue
             
             # Check circularity (bullet holes are circular)
             perimeter = cv2.arcLength(contour, True)
@@ -319,9 +318,8 @@ def detect_bullets(
                     continue
                 
                 # Skip if in exclusion zone
-                # TEMPORARILY DISABLED
-                # if exclusion_zone[y, x] > 0:
-                #     continue
+                if exclusion_zone[y, x] > 0:
+                    continue
                 
                 # Check if this circle corresponds to a dark region
                 roi = gray[max(0, y-r):min(h, y+r), max(0, x-r):min(w, x+r)]
@@ -499,7 +497,7 @@ def process_image(image_bytes: bytes,
         rect = order_points(pts)
         w = int(max(np.linalg.norm(rect[2] - rect[3]),
                     np.linalg.norm(rect[1] - rect[0])))
-        h = int(max(np.linalg.norm(rect[1] - rect[2]),
+        h = int(max(np.linalg.norm(rect[1] - rect[2]),  
                     np.linalg.norm(rect[0] - rect[3])))
         
         # Ensure minimum size

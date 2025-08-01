@@ -7,6 +7,10 @@ from processors.cv2_process import process_image
 
 app = FastAPI()
 
+@app.get("/")
+async def root():
+    return {"message": "Bullet detection API is running!", "status": "ok"}
+
 def encode_img(path):
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
