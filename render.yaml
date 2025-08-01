@@ -8,3 +8,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
+      - key: LD_PRELOAD
+        value: "/usr/lib/x86_64-linux-gnu/libgthread-2.0.so.0"
+      - key: PORT
+        value: "8000"

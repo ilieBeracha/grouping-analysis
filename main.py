@@ -1,11 +1,28 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, CORSMiddleware   
 from fastapi.responses import JSONResponse
 import base64
 import os
 
 from processors.cv2_process import process_image
 
-app = FastAPI()
+app = FastAPI({
+    "title": "Bullet detection API",
+    "description": "API for detecting bullet holes in images",
+    "version": "0.1.0",
+    "contact": {
+        "name": "John Doe",
+        "email": "john.doe@example.com"
+    }
+
+})
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 async def root():
