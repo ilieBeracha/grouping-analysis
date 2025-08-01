@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File   
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 import base64
 import os
@@ -13,17 +13,14 @@ CORS = CORSMiddleware(
     allow_headers=["*"],
 )
 
-app = FastAPI({
-    "title": "Bullet detection API",
-    "description": "API for detecting bullet holes in images",
-    "version": "0.1.0",
-    "contact": {
-        "name": "John Doe",
-        "email": "john.doe@example.com"
-    }
-},      
+app = FastAPI(
     middleware=[CORS]
 )
+
+@app.middleware("http")
+async def add_middleware(request: Request, call_next):
+    response = await call_next(request)
+    return response
 
 
 @app.get("/")
