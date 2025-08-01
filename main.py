@@ -6,21 +6,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from processors.cv2_process import process_image
 
-CORS = CORSMiddleware(
+app = FastAPI(
+    title="Bullet detection API",
+    description="API for detecting bullet holes in images",
+    version="0.1.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app = FastAPI(
-    middleware=[CORS]
-)
-
-@app.middleware("http")
-async def add_middleware(request: Request, call_next):
-    response = await call_next(request)
-    return response
 
 
 @app.get("/")
