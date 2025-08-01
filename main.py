@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, CORSMiddleware
 from fastapi.responses import JSONResponse
 import base64
 import os
+from fastapi.middleware.cors import CORSMiddleware
 
 from processors.cv2_process import process_image
 
@@ -17,6 +18,7 @@ app = FastAPI({
 })
 
 app.add_middleware(
+    CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
