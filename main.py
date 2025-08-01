@@ -1,30 +1,25 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 import base64
-import cv2
-import numpy as np
 import os
-from helpers.image_setup import contrast_pct
 
 from processors.cv2_process import process_image
 
 app = FastAPI()
 
-
 def encode_img(path):
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
-
 @app.post("/upload/")
 async def upload_image(file: UploadFile = File(...), bullet_type: str = "7.62mm", contrast: float = 2.0):
     img = await file.read()
+    
     result = process_image(img, bullet_type=bullet_type, contrast_factor=contrast)
-
-    # Add base64 previews
+    print(result)
     for key in result:
-        path = result[key]["image_file"]
+        path = result[key]['image_file']
         if os.path.exists(path):
-            result[key]["preview_base64"] = encode_img(path)
+            result[key]['preview_base64'] = encode_img(path)
 
     return JSONResponse(content=result, status_code=200)
