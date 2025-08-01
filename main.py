@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, CORSMiddleware   
+from fastapi import FastAPI, UploadFile, File   
 from fastapi.responses import JSONResponse
 import base64
 import os
