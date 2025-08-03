@@ -9,7 +9,7 @@ def detect_bullets(
     img: np.ndarray,
     bullet_type: str = "7.62mm",
     contrast_factor: float = 2.0,
-    max_hits: int = 6,
+    max_hits: int = 10,
     debug_name: str = None,  
 ) -> list[tuple[int, int, int, float]]:
     """
@@ -17,6 +17,14 @@ def detect_bullets(
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
+    # Bullet calibre size parameters (pixel radii)
+    bullet_specs = {
+        "22lr": (3, 7),
+        "9mm": (4, 12),
+        "7.62mm": (8, 60),
+        "5.56mm": (4, 10),
+    }
+    min_r, max_r = bullet_specs.get(bullet_type.lower(), (5, 80))
     
     # Step 1: Enhanced preprocessing
     # Use bilateral filter to smooth while preserving edges
@@ -54,7 +62,12 @@ def detect_bullets(
     adaptive = adaptive_combined
     
     # Remove edge regions from adaptive threshold
-    adaptive_no_edges = cv2.bitwise_and(adaptive, cv2.bitwise_not(edges_dilated))
+    # Skip edge exclusion to avoid losing hits on grid lines
+    skip_edge_mask = True  # allow holes on grid lines
+    if skip_edge_mask:
+        adaptive_no_edges = adaptive.copy()
+    else:
+        adaptive_no_edges = cv2.bitwise_and(adaptive, cv2.bitwise_not(edges_dilated))
     
     # Step 4: Morphological operations to clean up noise
     kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -107,6 +120,8 @@ def detect_bullets(
     # Very minimal dilation - just catch the edges
     edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     exclusion_zone = cv2.dilate(exclusion_zone, edge_kernel, iterations=1)
+    # Disable exclusion mask to keep hits on printed diamonds/grid
+    #exclusion_zone[:] = 0  # keep exclusion active
     
     # Save debug images if requested
     if debug_name:
@@ -198,13 +213,13 @@ def detect_bullets(
         
         # Filter by area (bullet holes have specific size range)
         # Balance between catching real holes and avoiding tiny marks
-        if 50 < area < 3000:  # Much more permissive for contour detection
+        if 50 < area < 250000:  # Wider bounds for larger bullets
             # Get bounding circle
             (x, y), radius = cv2.minEnclosingCircle(contour)
             x, y, r = int(x), int(y), int(radius)
             
             # Skip if too close to edge
-            if x < 20 or y < 20 or x > w - 20 or y > h - 20:
+            if x < 5 or y < 5 or x > w - 5 or y > h - 5:
                 continue
             
             # CRITICAL: Skip if in exclusion zone (printed targets, text, etc.)
@@ -237,20 +252,20 @@ def detect_bullets(
                 
                 # More permissive validation for real bullets
                 
-                # Size validation - wider range to catch all bullets
-                is_valid_size = 5 <= r <= 25  # Wider range
+                # Size validation - greatly relaxed to catch all calibres
+                is_valid_size = min_r <= r <= max_r  # Size range based on calibre
                 
                 # Shape validation - VERY permissive
-                is_very_circular = circularity > 0.3  # Much lower threshold
-                is_not_elongated = aspect_ratio > 0.2  # Very permissive
+                is_very_circular = circularity > 0.25  # balanced
+                is_not_elongated = aspect_ratio > 0.1  # Even more permissive
                 
                 # Ring pattern validation - very permissive
-                is_ring_pattern = 0.3 < solidity < 0.95  # Almost any non-solid shape
+                is_ring_pattern = 0.10 < solidity < 0.98  # Loosened further
                 
                 # Perimeter to area ratio - helps identify borders vs holes
                 # Borders have high perimeter relative to area
                 perimeter_ratio = perimeter / area if area > 0 else 999
-                is_not_border = perimeter_ratio < 1.0  # More permissive
+                is_not_border = perimeter_ratio < 1.5  # Further permissive
                 
                 # Debug logging
                 if debug_name and r > 3:
@@ -260,9 +275,8 @@ def detect_bullets(
                           f"solid={solidity:.2f} in (0.3,0.95)={is_ring_pattern}, "
                           f"closed={is_closed}, border={perimeter_ratio:.2f}<1.0={is_not_border}")
                 
-                # All criteria must be met
-                if (is_valid_size and is_very_circular and is_not_elongated and 
-                    is_closed and is_ring_pattern and is_not_border):
+                # Basic criteria: size only (other shape tests disabled)
+                if is_valid_size:
                     # Calculate how dark the center is compared to surroundings
                     mask = np.zeros(gray.shape, dtype=np.uint8)
                     cv2.drawContours(mask, [contour], -1, 255, -1)
@@ -275,12 +289,12 @@ def detect_bullets(
                     mean_ring = cv2.mean(gray, mask=mask_ring)[0]
                     
                     # Bullet holes are darker inside
-                    if mean_inside < mean_ring * 0.82:  # At least 18% darker
+                    if mean_inside < mean_ring * 0.93:  # At least 5% darker
                         contrast = contrast_pct(mean_inside, mean_ring)
                         
                         # Additional validation: more permissive
                         # Accept most potential bullet holes
-                        if r >= 5 and contrast > 20:  # Lower requirements
+                        if r >= 3 and contrast > 10:  # Much lower requirements
                             contour_bullets.append((x, y, r, contrast, circularity))
     
     # Step 4: Use HoughCircles as a secondary detection method
@@ -292,9 +306,9 @@ def detect_bullets(
     # Try multiple parameter sets for better coverage
     param_sets = [
         # (dp, minDist, param1, param2, minR, maxR)
-        (1.0, 20, 40, 15, 5, 25),    # More sensitive to smaller/fainter
-        (1.2, 30, 50, 20, 8, 30),    # Medium sensitivity
-        (1.5, 25, 30, 12, 10, 35),   # Larger circles
+        (1.0, 30, 40, 15, 8, 40),    # wider range, bigger
+        (1.2, 40, 50, 20, 12, 60),   # medium
+        (1.5, 35, 30, 12, 15, 80),   # very large
     ]
     
     for dp, minDist, p1, p2, minR, maxR in param_sets:
@@ -314,7 +328,7 @@ def detect_bullets(
                 x, y, r = int(x), int(y), int(r)
                 
                 # Skip edge detections
-                if x < 20 or y < 20 or x > w - 20 or y > h - 20:
+                if x < 5 or y < 5 or x > w - 5 or y > h - 5:
                     continue
                 
                 # Skip if in exclusion zone
@@ -363,7 +377,7 @@ def detect_bullets(
         for (x, y, r) in gradient_circles[0]:
             x, y, r = int(x), int(y), int(r)
             
-            if 30 < x < w - 30 and 30 < y < h - 30 and exclusion_zone[y, x] == 0:
+            if 5 < x < w - 5 and 5 < y < h - 5:
                 # Verify dark center with gradient ring
                 mask_center = np.zeros(gray.shape, dtype=np.uint8)
                 cv2.circle(mask_center, (x, y), max(1, r//2), 255, -1)
@@ -399,11 +413,11 @@ def detect_bullets(
     
     for contour in dark_contours:
         area = cv2.contourArea(contour)
-        if 50 < area < 3000:  # More permissive size range
+        if 50 < area < 250000:  # Wider bounds for larger bullets
             (x, y), radius = cv2.minEnclosingCircle(contour)
             x, y, r = int(x), int(y), int(radius)
             
-            if 5 < r < 35 and 20 < x < w - 20 and 20 < y < h - 20 and exclusion_zone[y, x] == 0:
+            if 5 < r < 60 and 20 < x < w - 20 and 20 < y < h - 20:
                 # Verify it's actually dark
                 mask = np.zeros(gray.shape, dtype=np.uint8)
                 cv2.circle(mask, (x, y), r, 255, -1)
@@ -415,9 +429,9 @@ def detect_bullets(
                 cv2.circle(mask_ring, (x, y), r, 0, -1)
                 mean_outside = cv2.mean(gray, mask=mask_ring)[0]
                 
-                if mean_inside < mean_outside * 0.75:  # At least 25% darker
+                if mean_inside < mean_outside * 0.90:  # At least 10% darker
                     contrast = contrast_pct(mean_inside, mean_outside)
-                    if contrast > 30:
+                    if contrast > 15:
                         other_bullets.append((x, y, r, contrast, 0.8))
     
     # Step 7: Combine results - PRIORITIZE CONTOUR DETECTIONS
@@ -447,9 +461,9 @@ def detect_bullets(
     
     # Sort by contrast (best bullets first)
     final_bullets.sort(key=lambda b: b[3], reverse=True)
-    
-    # Quality filter - prioritize REAL bullet holes (large with good contrast)
-    quality_bullets = []
+
+    # Relaxed mode: return highest-contrast hits without extra filtering
+    return final_bullets[:max_hits]
     
     # First pass: Add all bullets that are clearly real (proper size and contrast)
     for x, y, r, contrast in final_bullets:
@@ -531,22 +545,22 @@ def process_image(image_bytes: bytes,
         quadrant_img = sheet[y1:y2, x1:x2]
         
         # Detect bullets in this quadrant
-        hits = detect_bullets(quadrant_img, bullet_type, contrast_factor, max_hits=6, debug_name=name)
+        hits = detect_bullets(quadrant_img, bullet_type, contrast_factor, max_hits=10, debug_name=name)
         
         # Adjust coordinates to full sheet coordinates
         adjusted_hits = []
-        for (x, y, r, contrast) in hits[:6]:  # Keep only top 6 per quadrant
+        for (x, y, r, contrast) in hits[:10]:  # Keep only top 10 per quadrant
             adj_x = x + x1
             adj_y = y + y1
             # Validate that the bullet is within the sheet boundaries
             # Also exclude detections very close to sheet edges (often artifacts)
-            edge_margin = 30  # pixels from sheet edge
+            edge_margin = 5  # pixels from sheet edge
             if (edge_margin < adj_x < w - edge_margin) and (edge_margin < adj_y < h - edge_margin):
                 adjusted_hits.append((adj_x, adj_y, r, contrast))
         
         # Draw visualization
         vis_img = quadrant_img.copy()
-        for i, (x, y, r, contrast) in enumerate(hits[:6]):
+        for i, (x, y, r, contrast) in enumerate(hits[:10]):
             # Draw circle
             cv2.circle(vis_img, (x, y), r, (0, 255, 0), 2)
             cv2.circle(vis_img, (x, y), 2, (0, 0, 255), -1)
@@ -568,14 +582,91 @@ def process_image(image_bytes: bytes,
             "image_file": path,
         }
     
+    # ------------------------------------------------------------------
+    # Extra analysis: diamond centre and group offset (Δ in grid squares)
+    # ------------------------------------------------------------------
+    def detect_diamond_centers(gray_img: np.ndarray) -> list[tuple[int, int]]:
+        """Detect centres of printed diamonds in the full sheet."""
+        # Very dark regions
+        _, th = cv2.threshold(gray_img, 60, 255, cv2.THRESH_BINARY_INV)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel)
+        cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        centres: list[tuple[int, int]] = []
+        for c in cnts:
+            area = cv2.contourArea(c)
+            if area < 2000:
+                continue
+            rect = cv2.minAreaRect(c)
+            (cx, cy), (w_box, h_box), angle = rect
+            # Diamond ≈ square rotated 45°
+            aspect = min(w_box, h_box) / max(w_box, h_box) if max(w_box, h_box) else 0
+            if aspect > 0.7 and 20 < w_box < gray_img.shape[1] and 20 < h_box < gray_img.shape[0]:
+                centres.append((int(cx), int(cy)))
+        return centres
+
+    def estimate_grid_spacing(gray_img: np.ndarray) -> float:
+        """Return median pixel distance between adjacent grid lines (or 0)."""
+        edges = cv2.Canny(gray_img, 50, 150)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=150, minLineLength=100, maxLineGap=5)
+        if lines is None:
+            return 0
+        horizontals, verticals = [], []
+        for l in lines:
+            x1, y1, x2, y2 = l[0]
+            dx, dy = abs(x2 - x1), abs(y2 - y1)
+            if dy < 5 and dx > 30:
+                horizontals.append(y1)
+            if dx < 5 and dy > 30:
+                verticals.append(x1)
+        def median_spacing(vals):
+            vals = sorted(vals)
+            diffs = [b - a for a, b in zip(vals[:-1], vals[1:]) if 10 < b - a < 100]
+            if not diffs:
+                return 0
+            return float(np.median(diffs))
+        h_space = median_spacing(horizontals)
+        v_space = median_spacing(verticals)
+        # Return average of both if reasonable, else whichever non-zero
+        if h_space and v_space:
+            return (h_space + v_space) / 2
+        return h_space or v_space or 0
+
+    diamond_centres = detect_diamond_centers(gray)
+    grid_px = estimate_grid_spacing(gray)
+
+    # Map diamond centre to quadrant by nearest centre of quadrant bounds
+    for name, data in output.items():
+        x1, y1, x2, y2 = quarters[name]["bounds"]
+        # pick nearest diamond centre inside this quadrant
+        cand = [(cx, cy) for (cx, cy) in diamond_centres if x1 <= cx < x2 and y1 <= cy < y2]
+        if cand:
+            # closest to quadrant centre
+            qcx, qcy = (x1 + x2) // 2, (y1 + y2) // 2
+            cx, cy = min(cand, key=lambda p: (p[0]-qcx)**2 + (p[1]-qcy)**2)
+            pts = data["points"]
+            if pts:
+                gx = int(np.mean([p[0] for p in pts]))
+                gy = int(np.mean([p[1] for p in pts]))
+                dx_px, dy_px = gx - cx, gy - cy
+                if grid_px:
+                    dx_grid, dy_grid = dx_px / grid_px, dy_px / grid_px
+                else:
+                    dx_grid = dy_grid = None
+                data["aim"] = (int(cx), int(cy))
+                data["group_center"] = (gx, gy)
+                data["delta_px"] = (int(dx_px), int(dy_px))
+                if dx_grid is not None:
+                    data["delta_grid"] = (round(dx_grid, 2), round(dy_grid, 2))
+
     # Also save full sheet with all detections for debugging
     full_vis = sheet.copy()
     total_hits = 0
     for name, data in output.items():
         for i, (x, y, contrast) in enumerate(data["points"]):
             cv2.circle(full_vis, (x, y), 12, (0, 255, 0), 2)
-            cv2.putText(full_vis, name.split('_')[0][0].upper() + 
-                       name.split('_')[1][0].upper() + str(i+1), 
+            cv2.putText(full_vis, name.split('_')[0][0].upper() + \
+                       name.split('_')[1][0].upper() + str(i+1), \
                        (x-15, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
             total_hits += 1
     
